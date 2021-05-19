@@ -1,5 +1,6 @@
 import os
-from eventloop import EventLoop, FileSystemWatch, SingleShotTimer, walk
+from eventloop import EventLoop, FileSystemWatch, SingleShotTimer, walk, Schedule
+import eventloop.base
 import argparse
 from colorama import Fore, Back, Style, init as colorama_init
 import xml.etree.ElementTree as ET
@@ -34,8 +35,73 @@ has_PyQt5 = 'PyQt5' in globals()
 def now_str():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-class Logger:
+class UiData:
     def __init__(self, path):
+        self._path = path
+        tree = ET.parse(path)
+        root = tree.getroot()
+        item = root.find('class')
+        class_ = item.text
+        item = root.find('widget')
+        widget = item.get('class')
+        self._class = class_
+        self._widget = widget
+        #print(class_, widget)
+
+    def class_(self):
+        return self._class
+
+    def widget(self):
+        return self._widget
+
+    def dst_path(self):
+        return os.path.join(os.path.dirname(self._path), 'Ui_{}.py'.format(self._class))
+
+    def src_path(self):
+        return self._path
+
+    def src_rel_path(self):
+        return os.path.basename(self._path)
+
+    def dst_rel_path(self):
+        return os.path.basename(self.dst_path())
+
+    def class_path(self):
+        return os.path.join(os.path.dirname(self._path), '{}.py'.format(self._class))
+
+    def src_dirname(self):
+        return os.path.dirname(self._path)
+
+    def class_text(self):
+        # TODO template in appdata
+        if has_PySide2:
+            package = 'PySide2'
+        elif has_PyQt5:
+            package = 'PyQt5'
+        class_ = self._class
+        widget = self._widget
+        return """
+from {} import QtWidgets
+from Ui_{} import Ui_{}
+
+class {}(QtWidgets.{}):
+    def __init__(self, parent = None):
+        super().__init__(parent)
+        ui = Ui_{}()
+        ui.setupUi(self)
+        self._ui = ui
+
+if __name__ == "__main__":
+    app = QtWidgets.QApplication()
+    widget = {}()
+    widget.show()
+    app.exec_()
+
+""".format(package, class_, class_, class_, widget, class_, class_)
+
+class Logger(eventloop.base.Logger):
+    def __init__(self, path):
+        super().__init__()
         self._path = path
         
     def print_info(self, msg):
@@ -46,9 +112,26 @@ class Logger:
 
     def print_compiled(self, src, dst):
         print(Fore.WHITE + now_str() + " " + Fore.GREEN + Style.BRIGHT + os.path.relpath(src, self._path) + Fore.WHITE + " -> " + Fore.GREEN + os.path.relpath(dst, self._path) + Fore.RESET + Style.NORMAL)
+    
+    def print_writen(self, class_path):
+        print(Fore.WHITE + now_str() + " " + Fore.GREEN + Style.BRIGHT + os.path.relpath(class_path, self._path) + Fore.RESET + Style.NORMAL)
 
-class Runner:
-    def __init__(self, logger):
+def is_modified_within_n_seconds(path, n):
+    if not os.path.exists(path):
+        return False
+    d1 = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+    d2 = datetime.datetime.now()
+    debug_print(d1, d2, (d2 - d1).total_seconds())
+    return d1 <= d2 and (d2 - d1).total_seconds() < n
+
+def write_text(path, content):
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+class Executor(eventloop.base.Executor):
+
+    def __init__(self, logger, no_class_files):
+        super().__init__()
         self._logger = logger
         if sys.platform == 'win32':
             ext = ".bat"
@@ -59,73 +142,46 @@ class Runner:
         elif has_PyQt5:
             uic = ["pyuic5" + ext]
         self._uic = uic
+        self._no_class_files = no_class_files
 
-    def run(self, src, dst):
+    def execute(self, task):
+        src = task
+        data = UiData(src)
+        dst = data.dst_path()
         uic = self._uic
         logger = self._logger
-
-        base = os.path.dirname(src)
-        src_ = os.path.relpath(src, base)
-        dst_ = os.path.relpath(dst, base)
-
-        args = uic + ["-x", "-o", dst_, src_]
-        #print(args)
-        process = Popen(args, stdout=PIPE, stderr=PIPE, cwd=base)
-        stdout, stderr = process.communicate()
-        codec = 'cp1251' if sys.platform == 'win32' else 'utf-8'
-        debug_print(stdout.decode(codec))
-        debug_print(stderr.decode(codec))
-        logger.print_compiled(src, dst)
-
-def dst_path(path):
-    #print("path", path)
-    tree = ET.parse(path)
-    root = tree.getroot()
-    item = root.find('class')
-    class_ = item.text
-    return os.path.join(os.path.dirname(path), "Ui_{}.py".format(class_))
-    
-class Schedule:
-
-    def __init__(self, logger, runner):
-        self._timer = None
-        self._items = []
-        self._logger = logger
-        self._runner = runner
         
-    def onTimer(self):
-        #print("onTimer")
-        runner = self._runner
-        for src in self._items:
-            dst = dst_path(src)
-            runner.run(src, dst)
-        self._items = []
+        command = uic + ["-x", "-o", data.dst_rel_path(), data.src_rel_path()]
+        process = Popen(command, stdout=PIPE, stderr=PIPE, cwd=data.src_dirname())
+        stdout, stderr = process.communicate()
+        modified = is_modified_within_n_seconds(dst, 5)
+        ok = process.returncode == 0 and modified
 
-    def append(self, path, timeout):
-        #print("append", path)
-        items = self._items
-        if isinstance(path, list):
-            paths = path
+        debug_print("process.returncode", process.returncode)
+        debug_print("modified", modified)
+
+        if ok:
+            logger.print_compiled(src, dst)
         else:
-            paths = [path]
-        #print("append", paths)
-        for path in paths:
-            if path not in items:
-                items.append(path)
-        self._schedule(timeout)
+            logger.print_error("Failed to compile {}".format(src))
+            codec = 'cp1251' if sys.platform == 'win32' else 'utf-8'
+            print(stdout.decode(codec))
+            print(stderr.decode(codec))
 
-    def _schedule(self, timeout):
-        timer = self._timer
-        if timer:
-            timer.stop()
-        timer = SingleShotTimer()
-        timer.start(timeout, self.onTimer)
-        self._timer = timer
+        if not self._no_class_files:
+            class_path = data.class_path()
+            if not os.path.exists(class_path):
+                write_text(class_path, data.class_text())
+                logger.print_writen(class_path)
+
+        # no point in rescheduling - must be something wrong with uic
+        return True
 
 def main():
     parser = argparse.ArgumentParser(prog="watch-ui")
     parser.add_argument('path',nargs='?',help="Path to watch, defaults to current directory")
     parser.add_argument('--no-initial-scan', action='store_true', help="Skip initial scan")
+    parser.add_argument('--no-class-files', action='store_true', help="")
     args = parser.parse_args()
 
     #print(args); exit(0)
@@ -136,30 +192,31 @@ def main():
     
     logger = Logger(watch_path)
 
-    runner = Runner(logger)
+    executor = Executor(logger, args.no_class_files)
     
     loop = EventLoop()
 
-    schedule = Schedule(logger, runner)
+    schedule = Schedule(executor)
 
     def on_event(path, _):
         schedule.append(path, 1)
 
     def initial_scan():
         _, files = walk(watch_path, ["*.ui"], [])
-        srcs = []
+        tasks = []
         for path in files:
             src = path
-            dst = dst_path(src)
+            data = UiData(path)
+            dst = data.dst_path()
             add = True
             if os.path.exists(dst):
                 m1 = os.path.getmtime(src)
                 m2 = os.path.getmtime(dst)
                 add = m2 <= m1
             if add:
-                srcs.append(src)
-        if len(srcs) > 0:
-            schedule.append(srcs, 0)
+                tasks.append(src)
+        if len(tasks) > 0:
+            schedule.append(tasks, 0)
 
     if not args.no_initial_scan:
         logger.print_info("Initial scan")
