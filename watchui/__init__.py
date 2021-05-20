@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from subprocess import Popen, PIPE, check_output
 import datetime
 import sys
+import shutil
 
 def debug_print_on(*args):
     print(*args)
@@ -92,7 +93,7 @@ class {}(QtWidgets.{}):
         self._ui = ui
 
 if __name__ == "__main__":
-    app = QtWidgets.QApplication()
+    app = QtWidgets.QApplication([])
     widget = {}()
     widget.show()
     app.exec_()
@@ -133,25 +134,29 @@ class Executor(eventloop.base.Executor):
     def __init__(self, logger, no_class_files):
         super().__init__()
         self._logger = logger
-        if sys.platform == 'win32':
-            ext = ".bat"
-        else:
-            ext = ""
-        if has_PySide2:
-            uic = ["pyside2-uic" + ext]
-        elif has_PyQt5:
-            uic = ["pyuic5" + ext]
-        self._uic = uic
         self._no_class_files = no_class_files
 
+        if has_PySide2:
+            name = "pyside2-uic"
+        elif has_PyQt5:
+            name = "pyuic5"
+
+        uic = shutil.which(name)
+        if uic is None:
+            raise Exception("{} not found in PATH".format(name))
+
+        self._uic = uic
+        
     def execute(self, task):
         src = task
+        if not os.path.exists(src):
+            return True
         data = UiData(src)
         dst = data.dst_path()
         uic = self._uic
         logger = self._logger
         
-        command = uic + ["-x", "-o", data.dst_rel_path(), data.src_rel_path()]
+        command = [uic, "-x", "-o", data.dst_rel_path(), data.src_rel_path()]
         process = Popen(command, stdout=PIPE, stderr=PIPE, cwd=data.src_dirname())
         stdout, stderr = process.communicate()
         modified = is_modified_within_n_seconds(dst, 5)
