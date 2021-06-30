@@ -1,12 +1,14 @@
 import os
-from eventloop import EventLoop, FileSystemWatch, SingleShotTimer, walk, Schedule
+from eventloop import EventLoop, FileSystemWatch, SingleShotTimer, walk
 import eventloop.base
+import eventloop
 import argparse
 from colorama import Fore, Back, Style, init as colorama_init
 import xml.etree.ElementTree as ET
 from subprocess import Popen, PIPE, check_output
 import datetime
 import sys
+import shutil
 
 def debug_print_on(*args):
     print(*args)
@@ -92,12 +94,47 @@ class {}(QtWidgets.{}):
         self._ui = ui
 
 if __name__ == "__main__":
-    app = QtWidgets.QApplication()
+    app = QtWidgets.QApplication([])
     widget = {}()
     widget.show()
     app.exec_()
 
 """.format(package, class_, class_, class_, widget, class_, class_)
+
+class RcData:
+    def __init__(self, path):
+        self._path = path
+        
+    def dst_path(self):
+        root = os.path.dirname(self._path)
+        name = os.path.splitext(os.path.basename(self._path))[0]
+        return os.path.join(root, name + "_rc.py")
+
+    def files(self):
+        res = []
+        tree = ET.parse(self._path)
+        root = tree.getroot()
+        for child in root:
+            if child.tag != 'qresource':
+                debug_print("child.tag != 'qresource'", child.tag)
+                continue
+            for child_ in child:
+                if child_.tag != 'file':
+                    debug_print("child_.tag != 'file'", child_.tag)
+                    continue
+                #debug_print("child_.text", child_.text)
+                path = os.path.join(os.path.dirname(self._path), os.path.normpath(child_.text))
+                res.append(path)
+        return res
+    
+    def src_rel_path(self):
+        return os.path.basename(self._path)
+
+    def dst_rel_path(self):
+        return os.path.basename(self.dst_path())
+
+    def src_dirname(self):
+        return os.path.dirname(self._path)
 
 class Logger(eventloop.base.Logger):
     def __init__(self, path):
@@ -128,30 +165,103 @@ def write_text(path, content):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
+class Collection:
+    def __init__(self):
+        self._paths = set()
+    
+    def append(self, rc, file):
+        debug_print('rc', rc, 'file',file)
+        self._paths.add((rc, file))
+        
+    def find(self, path):
+        for (rc, path_) in self._paths:
+            if path == path_:
+                return rc
+
+    def exts(self):
+        exts = set()
+        for (rc, file) in self._paths:
+            ext = os.path.splitext(file)[1]
+            if ext == '':
+                continue
+            exts.add(ext)
+        return exts
+
+def update_collection(rc_path, collection):
+    rc = RcData(rc_path)
+    for file in rc.files():
+        collection.append(rc_path, file)
+
+class Schedule(eventloop.Schedule):
+
+    def __init__(self, executor, collection):
+        super().__init__(executor)
+        self._collection = collection
+
+    def append(self, task, timeout):
+        ext = os.path.splitext(task)[1]
+        if ext not in ['.qrc','.ui']:
+            rc = self._collection.find(task)
+            if rc is not None:
+                self.append(rc, timeout)
+            else:
+                debug_print(task, 'not found')
+            return
+        return super().append(task, timeout)
+
 class Executor(eventloop.base.Executor):
 
-    def __init__(self, logger, no_class_files):
+    def __init__(self, logger, collection, no_class_files):
         super().__init__()
         self._logger = logger
-        if sys.platform == 'win32':
-            ext = ".bat"
-        else:
-            ext = ""
-        if has_PySide2:
-            uic = ["pyside2-uic" + ext]
-        elif has_PyQt5:
-            uic = ["pyuic5" + ext]
-        self._uic = uic
+        self._collection = collection
         self._no_class_files = no_class_files
+        if has_PySide2:
+            name = "pyside2-uic"
+        elif has_PyQt5:
+            name = "pyuic5"
 
+        uic = shutil.which(name)
+        if uic is None:
+            raise Exception("{} not found in PATH".format(name))
+
+        self._uic = uic
+
+        if has_PySide2:
+            name = "pyside2-rcc"
+        elif has_PyQt5:
+            name = "pyrcc5"
+        rcc = shutil.which(name)
+        if rcc is None:
+            raise Exception("{} not found in PATH".format(name))
+
+        self._rcc = rcc
+        
     def execute(self, task):
         src = task
-        data = UiData(src)
+
+        if not os.path.exists(src):
+            return True
+
+        ext = os.path.splitext(src)[1]
+
+        if ext == '.ui':
+            data = UiData(src)
+        elif ext == '.qrc':
+            data = RcData(src)
+            update_collection(src, self._collection)
+        
         dst = data.dst_path()
         uic = self._uic
+        rcc = self._rcc
+
         logger = self._logger
         
-        command = uic + ["-x", "-o", data.dst_rel_path(), data.src_rel_path()]
+        if ext == '.ui':
+            command = [uic, "-x", "-o", data.dst_rel_path(), data.src_rel_path()]
+        elif ext == '.qrc':
+            command = [rcc, "-o", data.dst_rel_path(), data.src_rel_path()]
+
         process = Popen(command, stdout=PIPE, stderr=PIPE, cwd=data.src_dirname())
         stdout, stderr = process.communicate()
         modified = is_modified_within_n_seconds(dst, 5)
@@ -168,11 +278,12 @@ class Executor(eventloop.base.Executor):
             print(stdout.decode(codec))
             print(stderr.decode(codec))
 
-        if not self._no_class_files:
-            class_path = data.class_path()
-            if not os.path.exists(class_path):
-                write_text(class_path, data.class_text())
-                logger.print_writen(class_path)
+        if ext == '.ui':
+            if not self._no_class_files:
+                class_path = data.class_path()
+                if not os.path.exists(class_path):
+                    write_text(class_path, data.class_text())
+                    logger.print_writen(class_path)
 
         # no point in rescheduling - must be something wrong with uic
         return True
@@ -192,29 +303,49 @@ def main():
     
     logger = Logger(watch_path)
 
-    executor = Executor(logger, args.no_class_files)
+    collection = Collection()
+
+    executor = Executor(logger, collection, args.no_class_files)
     
     loop = EventLoop()
 
-    schedule = Schedule(executor)
+    schedule = Schedule(executor, collection)
 
     def on_event(path, _):
         schedule.append(path, 1)
 
     def initial_scan():
-        _, files = walk(watch_path, ["*.ui"], [])
+
+        _, files = walk(watch_path, ["*.qrc"], [])
+        for path in files:
+            update_collection(path, collection)
+
+        _, files = walk(watch_path, ["*.ui", "*.qrc"], [])
         tasks = []
         for path in files:
             src = path
-            data = UiData(path)
-            dst = data.dst_path()
-            add = True
-            if os.path.exists(dst):
-                m1 = os.path.getmtime(src)
-                m2 = os.path.getmtime(dst)
-                add = m2 <= m1
-            if add:
-                tasks.append(src)
+            ext = os.path.splitext(src)[1]
+            if ext == ".ui":
+                data = UiData(path)
+                dst = data.dst_path()
+                add = True
+                if os.path.exists(dst):
+                    m1 = os.path.getmtime(src)
+                    m2 = os.path.getmtime(dst)
+                    add = m2 <= m1
+                if add:
+                    tasks.append(src)
+            elif ext == ".qrc":
+                data = RcData(path)
+                dst = data.dst_path()
+                add = False
+                if os.path.exists(dst):
+                    m1 = os.path.getmtime(src)
+                    m2 = os.path.getmtime(dst)
+                    add = m2 <= m1
+                if add:
+                    tasks.append(src)
+
         if len(tasks) > 0:
             schedule.append(tasks, 0)
 
@@ -224,7 +355,12 @@ def main():
 
     watch = FileSystemWatch()
     logger.print_info("Watching {}".format(watch_path))
-    watch.start(watch_path, on_event, recursive=True, include=["*.ui"])
+
+    resource_includes = ["*" + ext for ext in collection.exts()]
+
+    debug_print('resource_includes', resource_includes)
+
+    watch.start(watch_path, on_event, recursive=True, include=["*.ui", "*.qrc"] + resource_includes)
     loop.start()
 
 if __name__ == "__main__":
