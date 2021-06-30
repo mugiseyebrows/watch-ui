@@ -10,7 +10,7 @@ setup(
     author="Stanislav Doronin",
     author_email="mugisbrows@gmail.com",
     url='https://github.com/mugiseyebrows/watch-ui',
-    description='autocompiling script for ui files for PySide2 and PyQt5',
+    description='autocompiling script for ui and qrc files for PySide2 and PyQt5',
     long_description = long_description,
     install_requires = ['eventloop','colorama'],
     entry_points={
