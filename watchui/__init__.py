@@ -114,16 +114,15 @@ class RcData:
         res = []
         tree = ET.parse(self._path)
         root = tree.getroot()
-        for child in root:
-            if child.tag != 'qresource':
-                debug_print("child.tag != 'qresource'", child.tag)
+        for qresource in root:
+            if qresource.tag != 'qresource':
+                debug_print("qresource.tag != 'qresource'", qresource.tag)
                 continue
-            for child_ in child:
-                if child_.tag != 'file':
-                    debug_print("child_.tag != 'file'", child_.tag)
+            for file in qresource:
+                if file.tag != 'file':
+                    debug_print("file.tag != 'file'", file.tag)
                     continue
-                #debug_print("child_.text", child_.text)
-                path = os.path.join(os.path.dirname(self._path), os.path.normpath(child_.text))
+                path = os.path.join(os.path.dirname(self._path), os.path.normpath(file.text))
                 res.append(path)
         return res
     
