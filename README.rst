@@ -7,14 +7,14 @@ Installing
 
 watch-ui can be installed via pip as follows:
 
-::
+.. code-block:: bash
 
     pip install watch-ui
 
 Using
 =====
 
-::
+.. code-block:: bash
 
     watch-ui /path/to/project
 
