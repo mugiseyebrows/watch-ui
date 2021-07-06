@@ -198,6 +198,10 @@ class Schedule(eventloop.Schedule):
         self._collection = collection
 
     def append(self, task, timeout):
+        if isinstance(task, list):
+            for item in task:
+                self.append(item, timeout)
+            return
         ext = os.path.splitext(task)[1]
         if ext not in ['.qrc','.ui']:
             rc = self._collection.find(task)
