@@ -356,7 +356,7 @@ def main():
         logger.print_info("Initial scan")
         initial_scan()
 
-    watch = FileSystemWatch()
+    watch = FileSystemWatch(loop)
     logger.print_info("Watching {}".format(watch_path))
 
     resource_includes = ["*" + ext for ext in collection.exts()]
