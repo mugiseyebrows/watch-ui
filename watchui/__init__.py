@@ -9,6 +9,7 @@ from subprocess import Popen, PIPE, check_output
 import datetime
 import sys
 import shutil
+from eventloop.common import flavour, FLAVOUR_NONE, FLAVOUR_PYUV, FLAVOUR_PYSIDE2, FLAVOUR_QT5, FLAVOUR_PYSIDE2_QASYNC, FLAVOUR_QT5_QASYNC
 
 def debug_print_on(*args):
     print(*args)
@@ -21,18 +22,30 @@ if 'DEBUG_WATCH_UI' in os.environ and os.environ['DEBUG_WATCH_UI'] == "1":
 else:
     debug_print = debug_print_off
 
-try:
-    import PySide2
-    debug_print("using PySide2")
-except ImportError:
-    try:
-        import PyQt5
-        debug_print("using PyQt5")
-    except:
-        raise Exception("PySide2 not found and PyQt5 not found")
+# windows env variable
+# set USE_PYSIDE2=1
+# set USE_PYQT5=1
 
-has_PySide2 = 'PySide2' in globals()
-has_PyQt5 = 'PyQt5' in globals()
+# linux env variable
+# export USE_PYSIDE2=1
+# export USE_PYQT5=1
+
+if flavour == FLAVOUR_QT5:
+    import PyQt5
+elif flavour == FLAVOUR_PYSIDE2:
+    import PySide2
+else:
+    try:
+        import PySide2
+        flavour = FLAVOUR_PYSIDE2
+    except ImportError:
+        try:
+            import PyQt5
+            flavour = FLAVOUR_QT5
+        except:
+            raise Exception("PySide2 not found and PyQt5 not found")
+
+debug_print("flavour {}".format(flavour))
 
 def now_str():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -76,9 +89,9 @@ class UiData:
 
     def class_text(self):
         # TODO template in appdata
-        if has_PySide2:
+        if flavour == FLAVOUR_PYSIDE2:
             package = 'PySide2'
-        elif has_PyQt5:
+        elif flavour == FLAVOUR_QT5:
             package = 'PyQt5'
         class_ = self._class
         widget = self._widget
@@ -219,9 +232,9 @@ class Executor(eventloop.base.Executor):
         self._logger = logger
         self._collection = collection
         self._no_class_files = no_class_files
-        if has_PySide2:
+        if flavour == FLAVOUR_PYSIDE2:
             name = "pyside2-uic"
-        elif has_PyQt5:
+        elif flavour == FLAVOUR_QT5:
             name = "pyuic5"
 
         uic = shutil.which(name)
@@ -230,9 +243,9 @@ class Executor(eventloop.base.Executor):
 
         self._uic = uic
 
-        if has_PySide2:
+        if flavour == FLAVOUR_PYSIDE2:
             name = "pyside2-rcc"
-        elif has_PyQt5:
+        elif flavour == FLAVOUR_QT5:
             name = "pyrcc5"
         rcc = shutil.which(name)
         if rcc is None:
@@ -261,7 +274,10 @@ class Executor(eventloop.base.Executor):
         logger = self._logger
         
         if ext == '.ui':
-            command = [uic, "-x", "-o", data.dst_rel_path(), data.src_rel_path()]
+            if flavour == FLAVOUR_PYSIDE2:
+                command = [uic, "-o", data.dst_rel_path(), data.src_rel_path()]
+            elif flavour == FLAVOUR_QT5:
+                command = [uic, "-x", "-o", data.dst_rel_path(), data.src_rel_path()]
         elif ext == '.qrc':
             command = [rcc, "-o", data.dst_rel_path(), data.src_rel_path()]
 
